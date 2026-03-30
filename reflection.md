@@ -2,15 +2,93 @@
 
 ## 1. System Design
 
+### Core User Actions
+
+Three core things a user should be able to do with PawPal+:
+
+1. **Register an owner and pet** — Enter basic info (owner name, time available today; pet name, species, age) so the system knows who it is planning for and how much time exists in the day.
+2. **Add and manage care tasks** — Create tasks (e.g., morning walk, feeding, medication) with a title, category, duration, and priority level. Edit or remove tasks as the day changes.
+3. **Generate a daily care schedule** — Ask the system to produce an ordered plan that fits all high-priority tasks first, then medium and low, within the owner's available time budget, and see a clear explanation of why each task was chosen or skipped.
+
+---
+
+### Mermaid.js Class Diagram
+
+```mermaid
+classDiagram
+    class Owner {
+        +str name
+        +int available_minutes
+        +list~str~ preferences
+        +list~Pet~ pets
+        +add_pet(pet)
+        +set_available_time(minutes)
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +int age_years
+        +list~Task~ tasks
+        +add_task(task)
+        +remove_task(task)
+    }
+
+    class Task {
+        +str title
+        +str category
+        +int duration_minutes
+        +Priority priority
+        +bool is_completed
+        +mark_complete()
+    }
+
+    class Scheduler {
+        +Owner owner
+        +Pet pet
+        +list~Task~ tasks
+        +filter_by_priority(tasks)
+        +generate_schedule()
+        +explain_plan(schedule)
+    }
+
+    class ScheduledTask {
+        +Task task
+        +int start_minute
+        +str reason
+        +time_label(day_start_hour)
+    }
+
+    Owner "1" --> "1..*" Pet : owns
+    Pet "1" --> "0..*" Task : has
+    Scheduler --> Owner : uses
+    Scheduler --> Pet : uses
+    Scheduler --> Task : schedules
+    Scheduler ..> ScheduledTask : produces
+```
+
+**Relationships:**
+- An `Owner` owns one or more `Pet` objects.
+- Each `Pet` holds a list of `Task` objects representing its care needs.
+- The `Scheduler` takes an `Owner` and a `Pet` (plus an optional task list override) and produces a list of `ScheduledTask` objects.
+- `ScheduledTask` wraps a `Task` with a concrete start time and a human-readable reason.
+
+---
+
 **a. Initial design**
 
-- Briefly describe your initial UML design.
-- What classes did you include, and what responsibilities did you assign to each?
+The design uses four classes:
+
+- **`Task`** (dataclass) — the atomic unit of care. Holds what needs to happen (`title`, `category`), how long it takes (`duration_minutes`), and how urgent it is (`priority`). Using a dataclass keeps it clean and easy to serialize.
+- **`Pet`** (dataclass) — represents the animal being cared for. Owns a mutable list of tasks and exposes `add_task` / `remove_task` so the UI can manage tasks without touching internals.
+- **`Owner`** (dataclass) — represents the human. Its most important attribute is `available_minutes`, which acts as the daily time budget that the scheduler must respect.
+- **`Scheduler`** — the only class with real logic. It consumes an `Owner` and a `Pet`, sorts tasks by priority, and greedily packs as many as possible into the time budget. It also produces a plain-English explanation via `explain_plan`.
+
+A fifth helper dataclass, `ScheduledTask`, wraps a placed task with its start time and reason string, keeping the output structured and easy to render in the UI.
 
 **b. Design changes**
 
-- Did your design change during implementation?
-- If yes, describe at least one change and why you made it.
+Originally the `Scheduler` pulled tasks directly from `pet.tasks`. During implementation it became clear that the UI manages its own task list (stored in `st.session_state`) separately from any `Pet` instance, so the `Scheduler.__init__` was given an optional `tasks` parameter that overrides `pet.tasks`. This decouples the scheduler from how the UI stores state and makes it straightforward to unit-test the scheduler with an arbitrary task list without constructing a full `Pet`.
 
 ---
 
@@ -18,13 +96,18 @@
 
 **a. Constraints and priorities**
 
-- What constraints does your scheduler consider (for example: time, priority, preferences)?
-- How did you decide which constraints mattered most?
+The scheduler considers:
+- **Time budget** (`owner.available_minutes`) — hard constraint; tasks that would exceed the remaining time are skipped.
+- **Task priority** (`high` → `medium` → `low`) — determines the order tasks are evaluated; high-priority tasks are always considered before lower ones.
+- **Completion status** — already-completed tasks are excluded from the candidate list.
+
+Priority was chosen as the primary ordering signal because a pet owner's biggest risk is forgetting a critical task (medication, feeding) rather than optimising total throughput.
 
 **b. Tradeoffs**
 
-- Describe one tradeoff your scheduler makes.
-- Why is that tradeoff reasonable for this scenario?
+The greedy approach schedules tasks in strict priority order and skips any task that does not fit the remaining budget — it does **not** backtrack to find a combination that maximises total scheduled time. For example, if one high-priority task that takes 90 min is followed by a medium task that takes 10 min, and only 80 min remain, the 90-min task is skipped but the 10-min task can still be scheduled.
+
+This is reasonable for a pet-care context: correctness (always doing what is possible at the highest priority first) matters more than bin-packing optimality, and the logic is transparent enough that an owner can understand and trust the plan.
 
 ---
 
@@ -32,13 +115,17 @@
 
 **a. How you used AI**
 
-- How did you use AI tools during this project (for example: design brainstorming, debugging, refactoring)?
-- What kinds of prompts or questions were most helpful?
+AI was used to:
+- Brainstorm the class decomposition (Owner / Pet / Task / Scheduler) and identify that `ScheduledTask` was needed as a separate output type.
+- Generate the Mermaid diagram syntax from a natural-language description of the classes.
+- Produce the initial class skeletons with correct dataclass syntax and type hints.
+- Review the scheduler for missing edge cases (e.g., the task list override on `Scheduler`).
+
+The most useful prompt pattern was: *"Given these classes and their responsibilities, what relationships am I missing?"* — it surfaced the decoupling issue between the UI task list and `Pet.tasks`.
 
 **b. Judgment and verification**
 
-- Describe one moment where you did not accept an AI suggestion as-is.
-- How did you evaluate or verify what the AI suggested?
+The AI initially suggested the `Scheduler` should inherit from `Pet` to get direct access to its tasks. This was rejected because inheritance implies an "is-a" relationship, and a `Scheduler` is not a `Pet`. Composition (passing `Pet` as a constructor argument) is the correct relationship here. The change was verified by checking that the scheduler remained independently testable without a `Pet` instance when the `tasks` override is used.
 
 ---
 
@@ -46,13 +133,16 @@
 
 **a. What you tested**
 
-- What behaviors did you test?
-- Why were these tests important?
+Key behaviors to test:
+- Tasks are sorted correctly: high-priority tasks always appear before medium and low ones.
+- The time budget is respected: the total duration of scheduled tasks never exceeds `owner.available_minutes`.
+- Completed tasks are excluded from the schedule.
+- When no tasks fit, `generate_schedule` returns an empty list and `explain_plan` returns a clear message.
+- Tasks that are skipped due to time constraints appear in the "not scheduled" section of the explanation.
 
 **b. Confidence**
 
-- How confident are you that your scheduler works correctly?
-- What edge cases would you test next if you had more time?
+The greedy algorithm is simple enough to reason about manually, which gives high confidence for the core path. Edge cases to test next: tasks with equal priority and equal duration (tie-breaking), a single task that exactly fills the budget, and very large task counts to check performance.
 
 ---
 
@@ -60,12 +150,12 @@
 
 **a. What went well**
 
-- What part of this project are you most satisfied with?
+Separating the `ScheduledTask` output type from `Task` kept the scheduler's output clean and easy to render — the UI can display a table directly from `ScheduledTask` fields without any post-processing.
 
 **b. What you would improve**
 
-- If you had another iteration, what would you improve or redesign?
+The next iteration would add time-of-day constraints (e.g., "medication must be given after 9 AM") and dependency ordering (e.g., "feeding before medication"). The current model treats all tasks as interchangeable aside from priority and duration.
 
 **c. Key takeaway**
 
-- What is one important thing you learned about designing systems or working with AI on this project?
+Designing the data model before writing any logic forces clarity about what each class is responsible for. When the UI's state management clashed with the original design assumption (`pet.tasks` as the single source of truth), the fix was straightforward precisely because the scheduler was already cleanly separated from the data storage concern.
