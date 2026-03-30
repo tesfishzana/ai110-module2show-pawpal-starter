@@ -6,22 +6,77 @@ st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 st.title("🐾 PawPal+")
 st.caption("Pet care planning assistant — build a daily schedule for your pet.")
 
-# ---------------------------------------------------------------------------
-# Application "memory"
+# ===========================================================================
+# Challenge 3 & 4 — Emoji helpers for colour-coded display
+# ===========================================================================
+
+_PRIORITY_EMOJI = {
+    "high":   "🔴 High",
+    "medium": "🟡 Medium",
+    "low":    "🟢 Low",
+}
+
+_CATEGORY_EMOJI = {
+    "walk":       "🦮 walk",
+    "feeding":    "🍽️ feeding",
+    "medication": "💊 medication",
+    "grooming":   "✂️ grooming",
+    "enrichment": "🎾 enrichment",
+    "other":      "📋 other",
+}
+
+
+def fmt_priority(p: str) -> str:
+    return _PRIORITY_EMOJI.get(p, p)
+
+
+def fmt_category(c: str) -> str:
+    return _CATEGORY_EMOJI.get(c, c)
+
+
+def fmt_status(is_done: bool) -> str:
+    return "✅ done" if is_done else "⏳ pending"
+
+
+# ===========================================================================
+# Challenge 2 — Persistence helpers
 #
-# st.session_state works like a dictionary that survives Streamlit reruns.
-# We create the Owner once on the very first load, then reuse the same object.
-# Without this, every button click would wipe the owner and start over.
-# ---------------------------------------------------------------------------
+# On first load we try to restore the owner from data.json.
+# Every mutation that changes meaningful state calls save_owner() so the file
+# stays in sync without the user needing to click a "Save" button.
+# ===========================================================================
+
+DATA_FILE = "data.json"
+
+
+def load_owner() -> Owner:
+    """Try to load from data.json; return a fresh default owner if it doesn't exist."""
+    try:
+        return Owner.load_from_json(DATA_FILE)
+    except (FileNotFoundError, KeyError, ValueError):
+        return Owner(name="Jordan", available_minutes=120)
+
+
+def save_owner(owner: Owner) -> None:
+    """Write the current owner state to data.json silently."""
+    try:
+        owner.save_to_json(DATA_FILE)
+    except OSError:
+        pass  # don't crash the app if the filesystem isn't writable
+
+
+# ===========================================================================
+# Session state bootstrap
+# ===========================================================================
 
 if "owner" not in st.session_state:
-    st.session_state.owner = Owner(name="Jordan", available_minutes=120)
+    st.session_state.owner = load_owner()
 
 owner: Owner = st.session_state.owner
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Section 1 — Owner settings
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 st.header("1. Owner Settings")
 
@@ -37,11 +92,12 @@ with st.form("owner_form"):
     if st.form_submit_button("Save owner settings"):
         owner.name = new_name
         owner.set_available_time(int(new_time))
+        save_owner(owner)
         st.success(f"Saved — {owner.name} has {owner.available_minutes} min today.")
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Section 2 — Pet management
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 st.header("2. Your Pets")
 
@@ -57,6 +113,7 @@ with st.form("add_pet_form", clear_on_submit=True):
     if st.form_submit_button("Add pet"):
         if pet_name.strip():
             owner.add_pet(Pet(name=pet_name.strip(), species=species, age_years=int(pet_age)))
+            save_owner(owner)
             st.rerun()
 
 if owner.pets:
@@ -70,9 +127,9 @@ if owner.pets:
 else:
     st.info("No pets yet. Add one above.")
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Section 3 — Task management
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 st.header("3. Care Tasks")
 
@@ -107,6 +164,7 @@ else:
                 priority=Priority(priority),
                 frequency=frequency,
             ))
+            save_owner(owner)
             st.rerun()
 
     # --- Quick stats ---
@@ -117,8 +175,8 @@ else:
         done_count = total - pending_count
         m1, m2, m3 = st.columns(3)
         m1.metric("Total tasks", total)
-        m2.metric("Pending", pending_count)
-        m3.metric("Completed", done_count)
+        m2.metric("⏳ Pending", pending_count)
+        m3.metric("✅ Completed", done_count)
 
     # --- View, sort, and filter tasks ---
     with st.expander("View & sort tasks", expanded=False):
@@ -137,12 +195,11 @@ else:
             with col_filter:
                 filter_cat = st.selectbox(
                     "Filter by category",
-                    ["All"] + ["walk", "feeding", "medication", "grooming", "enrichment", "other"],
+                    ["All"] + list(_CATEGORY_EMOJI.keys()),
                     key="filter_cat",
                 )
 
             tasks_to_show = list(all_tasks)
-
             if sort_by == "Duration (shortest first)":
                 tasks_to_show = scheduler_view.sort_by_duration(tasks_to_show, ascending=True)
             elif sort_by == "Duration (longest first)":
@@ -162,11 +219,11 @@ else:
                     {
                         "Description": t.description,
                         "Pet": scheduler_view._find_pet_name(t),
-                        "Category": t.category,
+                        "Category": fmt_category(t.category),
                         "Duration (min)": t.duration_minutes,
-                        "Priority": t.priority.value,
+                        "Priority": fmt_priority(t.priority.value),
                         "Frequency": t.frequency,
-                        "Done": "yes" if t.is_completed else "no",
+                        "Status": fmt_status(t.is_completed),
                     }
                     for t in tasks_to_show
                 ]
@@ -174,12 +231,13 @@ else:
 
     # --- Mark a task complete ---
     with st.expander("Mark a task complete", expanded=False):
+        scheduler_view = Scheduler(owner=owner)
         pending_tasks = [t for t in all_tasks if not t.is_completed]
         if not pending_tasks:
             st.info("All tasks are already done!")
         else:
             task_labels = {
-                f"{t.description} ({scheduler_view._find_pet_name(t)}, {t.frequency})": t
+                f"{fmt_category(t.category)}  {t.description}  ({scheduler_view._find_pet_name(t)}, {t.frequency})": t
                 for t in pending_tasks
             }
             chosen_label = st.selectbox("Choose task to complete:", list(task_labels.keys()))
@@ -191,26 +249,40 @@ else:
 
             if st.button("Mark complete"):
                 renewal = Scheduler(owner=owner).mark_task_complete(chosen_task, chosen_pet)
+                save_owner(owner)
                 if renewal:
                     st.success(
-                        f"Done! '{chosen_task.description}' marked complete. "
-                        f"Next occurrence added for {renewal.due_date}."
+                        f"✅ '{chosen_task.description}' marked complete. "
+                        f"Next occurrence queued for **{renewal.due_date}**."
                     )
                 else:
-                    st.success(f"Done! '{chosen_task.description}' marked complete (no renewal for as-needed tasks).")
+                    st.success(f"✅ '{chosen_task.description}' marked complete (no renewal for as-needed tasks).")
                 st.rerun()
 
     if all_tasks and st.button("Clear all tasks for all pets"):
         for pet in owner.pets:
             pet.tasks.clear()
+        save_owner(owner)
         st.rerun()
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Section 4 — Generate the schedule
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 st.divider()
 st.header("4. Generate Today's Schedule")
+
+# Challenge 1 — let the user pick between standard and weighted scheduling
+schedule_mode = st.radio(
+    "Scheduling mode",
+    ["Standard (priority-first)", "Smart (weighted score)"],
+    horizontal=True,
+    help=(
+        "**Standard** ranks tasks strictly by priority tier (high → medium → low). "
+        "**Smart** combines priority, due-date urgency, and category importance into "
+        "a single score — so an overdue medication can outrank a non-urgent high-priority walk."
+    ),
+)
 
 if st.button("Generate schedule", type="primary"):
     all_tasks = owner.get_all_tasks()
@@ -218,7 +290,12 @@ if st.button("Generate schedule", type="primary"):
         st.warning("Add at least one task before generating a schedule.")
     else:
         scheduler = Scheduler(owner=owner)
-        schedule = scheduler.generate_schedule()
+        if schedule_mode == "Smart (weighted score)":
+            schedule = scheduler.weighted_schedule()
+            mode_label = "Smart weighted"
+        else:
+            schedule = scheduler.generate_schedule()
+            mode_label = "Standard priority"
 
         if not schedule:
             st.error(
@@ -226,44 +303,46 @@ if st.button("Generate schedule", type="primary"):
                 "Try increasing available time or shortening task durations."
             )
         else:
-            # --- Summary banner ---
             st.success(
-                f"Scheduled **{len(schedule)}** of **{len(all_tasks)}** task(s) "
+                f"**{mode_label}** schedule — "
+                f"**{len(schedule)}** of **{len(all_tasks)}** task(s) "
                 f"across **{len(owner.pets)}** pet(s) for **{owner.name}**."
             )
 
-            # --- Conflict detection — shown before the table so it's hard to miss ---
+            # Conflict detection — shown before the table so it's hard to miss
             conflicts = scheduler.detect_conflicts(schedule)
             if conflicts:
                 st.warning(f"**{len(conflicts)} scheduling conflict(s) detected:**")
                 for w in conflicts:
                     st.write(w)
             else:
-                st.info("No scheduling conflicts detected.")
+                st.info("✅ No scheduling conflicts detected.")
 
-            # --- Schedule table ---
+            # Schedule table with emoji formatting
             rows = [
                 {
                     "Time": entry.time_label(),
                     "Pet": entry.pet_name,
                     "Task": entry.task.description,
-                    "Category": entry.task.category,
+                    "Category": fmt_category(entry.task.category),
                     "Duration (min)": entry.task.duration_minutes,
-                    "Priority": entry.task.priority.value,
+                    "Priority": fmt_priority(entry.task.priority.value),
                     "Why scheduled": entry.reason,
                 }
                 for entry in schedule
             ]
             st.table(rows)
 
-            # --- Skipped tasks ---
+            # Skipped tasks
             skipped_ids = {id(e.task) for e in schedule}
             skipped = [t for t in all_tasks if id(t) not in skipped_ids and not t.is_completed]
             if skipped:
                 st.warning(f"**{len(skipped)} task(s) didn't fit in today's time budget:**")
                 for t in skipped:
-                    st.write(f"- **{t.description}** — {t.duration_minutes} min ({t.priority.value} priority)")
+                    st.write(
+                        f"- {fmt_priority(t.priority.value)}  **{t.description}** "
+                        f"— {t.duration_minutes} min"
+                    )
 
-            # --- Full explanation ---
             with st.expander("Full plan explanation"):
                 st.text(scheduler.explain_plan(schedule))

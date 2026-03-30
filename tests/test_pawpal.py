@@ -546,3 +546,149 @@ def test_normal_generated_schedule_has_no_conflicts():
     scheduler = Scheduler(owner=owner)
     schedule = scheduler.generate_schedule()
     assert scheduler.detect_conflicts(schedule) == []
+
+
+# ===========================================================================
+# Challenge 1 — Weighted scheduling
+# ===========================================================================
+
+def test_score_task_high_priority_beats_low():
+    owner = Owner(name="Jordan", available_minutes=120)
+    scheduler = Scheduler(owner=owner, tasks=[])
+    high = make_task("High task", priority=Priority.HIGH)
+    low  = make_task("Low task",  priority=Priority.LOW)
+    assert scheduler.score_task(high) > scheduler.score_task(low)
+
+
+def test_score_task_overdue_boosts_score():
+    owner = Owner(name="Jordan", available_minutes=120)
+    scheduler = Scheduler(owner=owner, tasks=[])
+    today = date.today()
+    overdue = Task("Overdue med", "medication", 5, frequency="daily",
+                   priority=Priority.MEDIUM, due_date=today - timedelta(days=1))
+    fresh   = Task("Fresh med",   "medication", 5, frequency="daily",
+                   priority=Priority.MEDIUM, due_date=today + timedelta(days=10))
+    assert scheduler.score_task(overdue) > scheduler.score_task(fresh)
+
+
+def test_score_task_medication_beats_walk_same_priority():
+    owner = Owner(name="Jordan", available_minutes=120)
+    scheduler = Scheduler(owner=owner, tasks=[])
+    med  = make_task("Give meds",   priority=Priority.MEDIUM, category="medication")
+    walk = make_task("Morning walk", priority=Priority.MEDIUM, category="walk")
+    assert scheduler.score_task(med) > scheduler.score_task(walk)
+
+
+def test_weighted_schedule_respects_time_budget():
+    owner, _ = make_owner_with_pet(
+        make_task("Walk",  duration=20, priority=Priority.HIGH),
+        make_task("Play",  duration=20, priority=Priority.MEDIUM),
+        available_minutes=30,
+    )
+    scheduler = Scheduler(owner=owner)
+    schedule = scheduler.weighted_schedule()
+    total = sum(e.task.duration_minutes for e in schedule)
+    assert total <= 30
+
+
+def test_weighted_schedule_overdue_medium_beats_fresh_high():
+    # An overdue medium medication should outscore a non-urgent high walk
+    # when the category weights and urgency bonus are applied.
+    today = date.today()
+    owner, pet = make_owner_with_pet(available_minutes=120)
+    med  = Task("Overdue med", "medication", 10, frequency="daily",
+                priority=Priority.MEDIUM, due_date=today - timedelta(days=2))
+    walk = Task("Fresh walk",  "walk",       10, frequency="daily",
+                priority=Priority.HIGH,   due_date=today + timedelta(days=7))
+    pet.add_task(med)
+    pet.add_task(walk)
+    scheduler = Scheduler(owner=owner)
+    schedule = scheduler.weighted_schedule()
+    # med score: 20 (medium) + 15 (overdue) + 10 (medication) = 45
+    # walk score: 30 (high) + 0 (not urgent) + 5 (walk) = 35
+    assert schedule[0].task.description == "Overdue med"
+
+
+def test_weighted_schedule_empty_tasks_returns_empty():
+    owner = Owner(name="Jordan", available_minutes=120)
+    scheduler = Scheduler(owner=owner, tasks=[])
+    assert scheduler.weighted_schedule() == []
+
+
+# ===========================================================================
+# Challenge 2 — JSON persistence (round-trip)
+# ===========================================================================
+
+import json
+import tempfile
+import os
+
+
+def test_task_to_dict_and_back():
+    today = date.today()
+    original = Task("Walk", "walk", 30, frequency="daily",
+                    priority=Priority.HIGH, due_date=today)
+    restored = Task.from_dict(original.to_dict())
+    assert restored.description   == original.description
+    assert restored.category      == original.category
+    assert restored.duration_minutes == original.duration_minutes
+    assert restored.priority      == original.priority
+    assert restored.due_date      == original.due_date
+    assert restored.is_completed  == original.is_completed
+
+
+def test_task_round_trip_with_none_due_date():
+    original = Task("Vet visit", "medication", 60, frequency="as-needed")
+    restored = Task.from_dict(original.to_dict())
+    assert restored.due_date is None
+
+
+def test_pet_to_dict_and_back():
+    pet = Pet(name="Mochi", species="dog", age_years=3)
+    pet.add_task(Task("Walk", "walk", 30))
+    pet.add_task(Task("Feed", "feeding", 10))
+    restored = Pet.from_dict(pet.to_dict())
+    assert restored.name      == pet.name
+    assert restored.species   == pet.species
+    assert restored.age_years == pet.age_years
+    assert len(restored.tasks) == 2
+    assert restored.tasks[0].description == "Walk"
+
+
+def test_owner_save_and_load(tmp_path):
+    owner = Owner(name="Jordan", available_minutes=90)
+    mochi = Pet(name="Mochi", species="dog")
+    mochi.add_task(Task("Morning walk", "walk", 30, frequency="daily",
+                        priority=Priority.HIGH, due_date=date.today()))
+    owner.add_pet(mochi)
+
+    filepath = str(tmp_path / "data.json")
+    owner.save_to_json(filepath)
+    restored = Owner.load_from_json(filepath)
+
+    assert restored.name              == "Jordan"
+    assert restored.available_minutes == 90
+    assert len(restored.pets)         == 1
+    assert restored.pets[0].name      == "Mochi"
+    assert len(restored.pets[0].tasks) == 1
+    assert restored.pets[0].tasks[0].description == "Morning walk"
+
+
+def test_owner_load_missing_file_raises():
+    import pytest
+    with pytest.raises(FileNotFoundError):
+        Owner.load_from_json("/nonexistent/path/data.json")
+
+
+def test_owner_round_trip_preserves_completed_status(tmp_path):
+    owner = Owner(name="Alex", available_minutes=60)
+    pet   = Pet(name="Luna", species="cat")
+    task  = Task("Feed", "feeding", 5)
+    task.mark_complete()
+    pet.add_task(task)
+    owner.add_pet(pet)
+
+    filepath = str(tmp_path / "data.json")
+    owner.save_to_json(filepath)
+    restored = Owner.load_from_json(filepath)
+    assert restored.pets[0].tasks[0].is_completed is True

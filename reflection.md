@@ -195,3 +195,61 @@ I'd also add time-of-day constraints (e.g., "medication must happen after 8 AM, 
 The most important thing I learned is that being the "lead architect" when working with AI means making the structural decisions yourself and using the AI to fill in the details. The moment I delegated a structural decision — like how the Scheduler should relate to Pet — the AI gave me a technically plausible but wrong answer (inheritance). When I held the architecture in my head and asked the AI to implement a specific piece of it, the output was useful and usually correct.
 
 Design-first also turned out to protect the code from AI drift. Because the class responsibilities were decided before any code was written, AI suggestions that would have muddied those responsibilities were easy to spot and reject. Without that upfront design, the code would have slowly accumulated shortcuts until the classes no longer had clean jobs.
+
+---
+
+## 6. Prompt Comparison — Weighted Scheduling Algorithm
+
+**The task:** Implement a smarter scheduling algorithm that goes beyond pure priority tiers, combining priority, due-date urgency, and category importance into a single numeric score.
+
+**How I framed the prompt:**
+> "I have a Task dataclass with priority (high/medium/low), due_date (Optional[date]), and category (string). I want a score_task() method on my Scheduler that computes a composite urgency score combining all three signals. Show me two different approaches and explain the tradeoffs."
+
+---
+
+### Model A — Claude (Anthropic)
+
+Claude produced a flat scoring function using additive integer weights:
+
+```python
+def score_task(self, task, category_weights=None):
+    weights = category_weights or DEFAULT_WEIGHTS
+    priority_score  = {Priority.HIGH: 30, Priority.MEDIUM: 20, Priority.LOW: 10}[task.priority]
+    urgency_score   = 0
+    if task.due_date:
+        days = (task.due_date - date.today()).days
+        if days <= 0:   urgency_score = 15
+        elif days == 1: urgency_score = 8
+        elif days <= 3: urgency_score = 3
+    category_score = weights.get(task.category, 1)
+    return priority_score + urgency_score + category_score
+```
+
+**What I liked:** The signal separation is explicit — three named variables, each with a clear job. The `category_weights` override makes the function testable with custom weights without touching the default. The urgency bands (overdue / tomorrow / soon) map cleanly to things a pet owner actually cares about.
+
+**What I changed:** Claude used `DEFAULT_WEIGHTS` as a module-level constant. I moved it to `_DEFAULT_CATEGORY_WEIGHTS` with a leading underscore to signal it's an internal default, not part of the public API.
+
+---
+
+### Model B — GPT-4 (OpenAI)
+
+GPT-4 produced a normalised float approach:
+
+```python
+def score_task(self, task):
+    priority_map = {"high": 1.0, "medium": 0.6, "low": 0.3}
+    p = priority_map.get(task.priority.value, 0.5)
+    urgency = 0.0
+    if task.due_date:
+        days = (task.due_date - date.today()).days
+        urgency = max(0.0, 1.0 - days / 7.0)   # linear decay over 7 days
+    return 0.6 * p + 0.4 * urgency
+```
+
+**What I liked:** The linear decay idea is elegant — it doesn't require hardcoded bands, and the weights (0.6 / 0.4) make the relative importance explicit at the formula level.
+
+**Why I chose Claude's version:** Three reasons. First, GPT-4's version drops category entirely — medication and a walk score identically if they have the same priority and due date, which doesn't match how a real pet owner thinks. Second, the linear `1.0 - days / 7.0` formula means a task due in 8 days scores zero urgency, the same as a task with no due date — that's a silent failure mode. Third, the additive integer approach is easier to reason about when writing tests: I can calculate the expected score in my head and assert against it directly (which is exactly what `test_weighted_schedule_overdue_medium_beats_fresh_high` does).
+
+**What GPT-4 did better:** The normalised float approach would compose more cleanly if I ever wanted to add a fourth signal (e.g., owner preference weight) — you'd just adjust the blend coefficients rather than re-tuning absolute integer values.
+
+**Conclusion:** For this codebase, the Claude version was more practical because it was testable, extensible via `category_weights`, and handled the category signal that GPT-4 missed. The GPT-4 approach would be worth revisiting if the scoring ever needs to become a learned model (where normalised inputs matter) rather than a hand-tuned heuristic.

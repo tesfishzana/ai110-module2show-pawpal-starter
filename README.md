@@ -95,6 +95,44 @@ Each test has an inline comment explaining what specific bug it protects against
 
 ---
 
+## Extension Challenges
+
+### Challenge 1 — Weighted Scheduling (Agent Mode)
+
+Added `Scheduler.weighted_schedule()`, which scores every task on three signals before scheduling:
+
+| Signal | How it works |
+|---|---|
+| Priority score | HIGH=30, MEDIUM=20, LOW=10 |
+| Urgency score | Overdue=+15, due tomorrow=+8, due within 3 days=+3, otherwise=0 |
+| Category score | medication=10, feeding=8, walk=5, grooming=3, enrichment=2, other=1 |
+
+An overdue medium-priority medication (score 45) will outrank a non-urgent high-priority walk (score 35) — closer to how a real owner would actually make that call. Category weights are configurable via `category_weights` param.
+
+Agent Mode was used to brainstorm the three-signal design, propose `score_task()` as a separate testable method, and generate the initial scoring constants. The decision to use additive integers over normalised floats came from comparing two model outputs — documented in `reflection.md` section 6.
+
+The UI exposes this as a **Standard (priority-first)** vs **Smart (weighted score)** radio toggle.
+
+### Challenge 2 — Data Persistence
+
+`Owner`, `Pet`, and `Task` each have `to_dict()` / `from_dict()` for full serialisation. `Owner` adds `save_to_json()` and `load_from_json()` to write and read the entire object graph from `data.json`.
+
+`app.py` loads from `data.json` on startup and auto-saves after every mutation — no "Save" button needed.
+
+### Challenge 3 & 4 — Emoji colour-coding
+
+Priority: 🔴 High, 🟡 Medium, 🟢 Low
+Category: 🦮 walk, 🍽️ feeding, 💊 medication, ✂️ grooming, 🎾 enrichment, 📋 other
+Status: ✅ done, ⏳ pending
+
+All tables use these consistently, including the skipped-tasks list and the mark-complete dropdown.
+
+### Challenge 5 — Multi-model prompt comparison
+
+See `reflection.md` section 6 for a side-by-side comparison of Claude vs GPT-4 on the weighted scheduling algorithm — what each model included, what each did better, and why additive integers were chosen over normalised floats.
+
+---
+
 ## Architecture
 
 Four classes plus one output type, all in `pawpal_system.py`:
