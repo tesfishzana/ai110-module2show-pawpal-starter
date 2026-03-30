@@ -1,81 +1,108 @@
-# PawPal+ (Module 2 Project)
+# PawPal+
 
-You are building **PawPal+**, a Streamlit app that helps a pet owner plan care tasks for their pet.
+A Streamlit app that helps a pet owner plan daily care tasks across multiple pets. You enter your pets, describe what each one needs, and PawPal+ builds a prioritised schedule that fits within the time you have — and explains every decision it makes.
 
-## Scenario
+---
 
-A busy pet owner needs help staying consistent with pet care. They want an assistant that can:
+## 📸 Demo
 
-- Track pet care tasks (walks, feeding, meds, enrichment, grooming, etc.)
-- Consider constraints (time available, priority, owner preferences)
-- Produce a daily plan and explain why it chose that plan
+<a href="/course_images/ai110/pawpal_screenshot.png" target="_blank">
+  <img src='/course_images/ai110/pawpal_screenshot.png' title='PawPal App' width='' alt='PawPal App' class='center-block' />
+</a>
 
-Your job is to design the system first (UML), then implement the logic in Python, then connect it to the Streamlit UI.
+---
 
-## What you will build
+## Features
 
-Your final app should:
+**Owner and pet management**
+- Register an owner with a daily time budget (in minutes)
+- Add multiple pets (name, species, age)
+- Tasks are attached to individual pets and stored in session state so nothing resets on page refresh
 
-- Let a user enter basic owner + pet info
-- Let a user add/edit tasks (duration + priority at minimum)
-- Generate a daily schedule/plan based on constraints and priorities
-- Display the plan clearly (and ideally explain the reasoning)
-- Include tests for the most important scheduling behaviors
+**Task management**
+- Add tasks with a description, category, duration, priority (high / medium / low), and frequency (daily / weekly / as-needed)
+- Quick stats bar shows total / pending / completed counts at a glance
+- Sort tasks by duration (shortest or longest first) or by due date
+- Filter tasks by category or across all pets
+
+**Smart scheduling**
+- Greedy priority-first scheduler fits as many tasks as possible within the owner's time budget
+- High-priority tasks are always evaluated before medium and low ones
+- Completed tasks are excluded automatically
+- Every scheduled entry includes a plain-English reason explaining why it was chosen
+- Tasks that didn't fit are listed separately so nothing gets silently lost
+
+**Recurring task renewal**
+- Marking a daily task complete automatically queues the next occurrence for tomorrow
+- Weekly tasks reappear seven days later
+- As-needed tasks (e.g., vet visits) are not renewed — they're one-offs
+
+**Conflict detection**
+- After generating the schedule, `detect_conflicts()` scans for overlapping time slots
+- Conflicts are shown as prominent warnings above the schedule table, not buried in logs
+- The normal scheduler never produces conflicts, but the detector is there as a safety net for manual or future parallel scheduling
+
+**Explain the plan**
+- Expandable "Full plan explanation" section shows every scheduling decision in plain English
+- Skipped tasks (not enough time) are listed with their duration and priority
+
+---
 
 ## Getting started
-
-### Setup
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+streamlit run app.py
 ```
 
-### Suggested workflow
+---
 
-1. Read the scenario carefully and identify requirements and edge cases.
-2. Draft a UML diagram (classes, attributes, methods, relationships).
-3. Convert UML into Python class stubs (no logic yet).
-4. Implement scheduling logic in small increments.
-5. Add tests to verify key behaviors.
-6. Connect your logic to the Streamlit UI in `app.py`.
-7. Refine UML so it matches what you actually built.
+## Project structure
 
-## Smarter Scheduling
+```
+pawpal_system.py   — backend logic (Owner, Pet, Task, Scheduler, ScheduledTask)
+app.py             — Streamlit UI
+main.py            — CLI demo script (run with: python main.py)
+tests/
+  test_pawpal.py   — 49 automated tests
+reflection.md      — design journal and AI collaboration notes
+```
 
-Beyond the basic greedy planner, PawPal+ includes four algorithmic features:
-
-**Sorting** — `Scheduler.sort_by_duration()` orders tasks shortest-first (or longest-first) so you can see at a glance which tasks are quick wins. `sort_by_due_date()` surfaces the most urgent tasks regardless of priority level.
-
-**Filtering** — `Scheduler.filter_tasks()` narrows any task list by pet name, completion status, or category. Useful for answering questions like "what does Mochi still have left today?" or "which feeding tasks are across all pets?"
-
-**Recurring task renewal** — `Scheduler.mark_task_complete(task, pet)` marks a task done and automatically queues the next occurrence. Daily tasks reappear tomorrow; weekly tasks reappear in seven days. As-needed tasks (like a vet visit) are not renewed automatically.
-
-**Conflict detection** — `Scheduler.detect_conflicts(schedule)` scans a list of scheduled entries for overlapping time slots using the standard interval test. It returns plain-English warnings rather than raising exceptions, so the app can surface the issue to the user without crashing.
+---
 
 ## Testing PawPal+
 
-Run the full test suite from the project root:
-
 ```bash
-python -m pytest
-# or for verbose output:
-python -m pytest -v
+python -m pytest        # run all tests
+python -m pytest -v     # verbose output with test names
 ```
 
-The suite lives in `tests/test_pawpal.py` and contains **49 tests** across five areas:
+The suite in `tests/test_pawpal.py` covers **49 tests** across five areas:
 
 | Area | What's covered |
 |---|---|
 | Task lifecycle | Creation defaults, `mark_complete()`, idempotency, isolation between tasks |
 | Recurrence | Daily (+1 day), weekly (+7 days), as-needed (no renewal), `due_date=None` fallback, attribute preservation |
-| Pet management | Add, remove, `pending_tasks()`, removing a task that was never added, all-done edge case |
+| Pet management | Add, remove, `pending_tasks()`, removing a task never added, all-done edge case |
 | Sorting | Duration ascending/descending, single-item and empty lists, due-date ordering, `None` dates sort last |
-| Scheduler | No pets, no tasks, zero time budget, task exactly fills budget, one minute over budget, priority ordering, all-completed input, combined filtering, conflict detection (clean, single overlap, same-start-time, three-way overlap, empty/single-entry) |
+| Scheduler | No pets, no tasks, zero time budget, exact-fill and one-minute-over boundary, priority ordering, all-completed input, combined filtering, conflict detection (clean, single overlap, same-start-time, three-way, empty/single-entry) |
 
-Each test is labelled with a short comment explaining what could go wrong without that specific check — the goal is that any future change to `pawpal_system.py` that breaks behaviour will be caught immediately.
+Each test has an inline comment explaining what specific bug it protects against.
 
-**Confidence: ★★★★☆**
+**Confidence: ★★★★☆** — Core logic is thoroughly covered. Main gap is UI-level and end-to-end tests.
 
-The core scheduling, sorting, filtering, and recurrence paths are thoroughly covered including boundary conditions. The main gap is integration-level tests for the Streamlit UI itself (button clicks, session-state persistence) and end-to-end tests that simulate a full user session from pet creation to schedule output.
+---
+
+## Architecture
+
+Four classes plus one output type, all in `pawpal_system.py`:
+
+- **`Task`** (dataclass) — a single care activity with description, category, duration, frequency, priority, and due date
+- **`Pet`** (dataclass) — holds a list of Tasks; knows which ones are still pending
+- **`Owner`** (dataclass) — holds the daily time budget and all pets; collects tasks across the household
+- **`Scheduler`** — the logic layer; sorts, filters, schedules, detects conflicts, handles renewals
+- **`ScheduledTask`** (dataclass) — output type pairing a Task with a start time, pet name, and reason
+
+See the full UML class diagram in `reflection.md`.

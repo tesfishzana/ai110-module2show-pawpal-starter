@@ -7,12 +7,12 @@
 Three core things a user should be able to do with PawPal+:
 
 1. **Register an owner and pet** — Enter basic info (owner name, time available today; pet name, species, age) so the system knows who it is planning for and how much time exists in the day.
-2. **Add and manage care tasks** — Create tasks (e.g., morning walk, feeding, medication) with a title, category, duration, and priority level. Edit or remove tasks as the day changes.
-3. **Generate a daily care schedule** — Ask the system to produce an ordered plan that fits all high-priority tasks first, then medium and low, within the owner's available time budget, and see a clear explanation of why each task was chosen or skipped.
+2. **Add and manage care tasks** — Create tasks (e.g., morning walk, feeding, medication) with a description, category, duration, priority, and frequency. Mark tasks complete and let recurring ones renew automatically.
+3. **Generate a daily care schedule** — Ask the system to produce an ordered plan that fits high-priority tasks first, within the owner's available time budget, and see a clear explanation of why each task was chosen or skipped — plus any scheduling conflicts.
 
 ---
 
-### Mermaid.js Class Diagram
+### Mermaid.js Class Diagram (Final)
 
 ```mermaid
 classDiagram
@@ -23,6 +23,7 @@ classDiagram
         +list~Pet~ pets
         +add_pet(pet)
         +set_available_time(minutes)
+        +get_all_tasks()
     }
 
     class Pet {
@@ -32,63 +33,77 @@ classDiagram
         +list~Task~ tasks
         +add_task(task)
         +remove_task(task)
+        +pending_tasks()
     }
 
     class Task {
-        +str title
+        +str description
         +str category
         +int duration_minutes
+        +str frequency
         +Priority priority
         +bool is_completed
+        +date due_date
         +mark_complete()
+        +next_occurrence()
     }
 
     class Scheduler {
         +Owner owner
         +Pet pet
         +list~Task~ tasks
+        +get_all_tasks()
+        +sort_by_duration(tasks, ascending)
+        +sort_by_due_date(tasks)
         +filter_by_priority(tasks)
+        +filter_tasks(tasks, pet_name, completed, category)
+        +mark_task_complete(task, pet)
         +generate_schedule()
+        +detect_conflicts(schedule)
         +explain_plan(schedule)
     }
 
     class ScheduledTask {
         +Task task
+        +str pet_name
         +int start_minute
         +str reason
+        +end_minute
         +time_label(day_start_hour)
     }
 
     Owner "1" --> "1..*" Pet : owns
     Pet "1" --> "0..*" Task : has
-    Scheduler --> Owner : uses
-    Scheduler --> Pet : uses
-    Scheduler --> Task : schedules
+    Scheduler --> Owner : reads from
+    Scheduler --> Pet : updates (renewals)
     Scheduler ..> ScheduledTask : produces
+    ScheduledTask --> Task : wraps
 ```
 
 **Relationships:**
-- An `Owner` owns one or more `Pet` objects.
-- Each `Pet` holds a list of `Task` objects representing its care needs.
-- The `Scheduler` takes an `Owner` and a `Pet` (plus an optional task list override) and produces a list of `ScheduledTask` objects.
-- `ScheduledTask` wraps a `Task` with a concrete start time and a human-readable reason.
+- An `Owner` owns one or more `Pet` objects and acts as the central data store.
+- Each `Pet` holds a list of `Task` objects and can report which ones are still pending.
+- The `Scheduler` reads from the `Owner` to collect all tasks across pets. When a task is marked complete, the Scheduler also writes back to the `Pet` (adding the renewal task).
+- `ScheduledTask` is a read-only output type — it wraps a `Task` with a concrete start time, the owning pet's name, and a plain-English reason.
 
 ---
 
 **a. Initial design**
 
-The design uses four classes:
+The design uses four main classes plus one output type:
 
-- **`Task`** (dataclass) — the atomic unit of care. Holds what needs to happen (`title`, `category`), how long it takes (`duration_minutes`), and how urgent it is (`priority`). Using a dataclass keeps it clean and easy to serialize.
-- **`Pet`** (dataclass) — represents the animal being cared for. Owns a mutable list of tasks and exposes `add_task` / `remove_task` so the UI can manage tasks without touching internals.
-- **`Owner`** (dataclass) — represents the human. Its most important attribute is `available_minutes`, which acts as the daily time budget that the scheduler must respect.
-- **`Scheduler`** — the only class with real logic. It consumes an `Owner` and a `Pet`, sorts tasks by priority, and greedily packs as many as possible into the time budget. It also produces a plain-English explanation via `explain_plan`.
-
-A fifth helper dataclass, `ScheduledTask`, wraps a placed task with its start time and reason string, keeping the output structured and easy to render in the UI.
+- **`Task`** (dataclass) — the atomic unit of care. It holds what needs to happen (`description`), how long it takes (`duration_minutes`), how often (`frequency`), and how urgent it is (`priority`). Using a dataclass keeps it clean — no `__init__` boilerplate, easy to inspect in tests. The `due_date` field was added later when recurring tasks needed a concrete reference date.
+- **`Pet`** (dataclass) — represents the animal. It owns a mutable list of tasks and exposes `add_task`, `remove_task`, and `pending_tasks` so the rest of the system never manipulates the list directly.
+- **`Owner`** (dataclass) — represents the human. The most important attribute is `available_minutes`, the daily time budget. `get_all_tasks()` makes the Owner a single collection point for all tasks across all pets, which is what the Scheduler needs.
+- **`Scheduler`** — the only class with real logic. It sorts by priority, greedily fills the time budget, handles recurring renewals, detects conflicts, and explains the plan.
+- **`ScheduledTask`** (dataclass) — a separate output type that pairs a `Task` with a start time and reason. This kept the schedule output structured and easy to render without mixing "what the task is" with "when it runs today."
 
 **b. Design changes**
 
-Originally the `Scheduler` pulled tasks directly from `pet.tasks`. During implementation it became clear that the UI manages its own task list (stored in `st.session_state`) separately from any `Pet` instance, so the `Scheduler.__init__` was given an optional `tasks` parameter that overrides `pet.tasks`. This decouples the scheduler from how the UI stores state and makes it straightforward to unit-test the scheduler with an arbitrary task list without constructing a full `Pet`.
+Originally the `Scheduler` pulled tasks directly from a single `pet.tasks`. Two things changed this:
+
+1. The UI manages tasks via `st.session_state`, not attached to a `Pet` instance, so the `Scheduler.__init__` was given an optional `tasks` parameter as an override. This let the UI and the backend coexist without fighting over who owns the task list.
+2. Phase 4 added multi-pet support, so the Scheduler's default path became `owner.get_all_tasks()` — collecting from all pets — rather than a single pet. This made `pet` optional in the constructor rather than required.
 
 ---
 
@@ -96,58 +111,68 @@ Originally the `Scheduler` pulled tasks directly from `pet.tasks`. During implem
 
 **a. Constraints and priorities**
 
-The scheduler considers:
-- **Time budget** (`owner.available_minutes`) — hard constraint; tasks that would exceed the remaining time are skipped.
-- **Task priority** (`high` → `medium` → `low`) — determines the order tasks are evaluated; high-priority tasks are always considered before lower ones.
-- **Completion status** — already-completed tasks are excluded from the candidate list.
+The scheduler considers three things:
+- **Time budget** (`owner.available_minutes`) — hard constraint; tasks that would exceed the remaining time are skipped. A task that exactly fills the budget is included (`<=`, not `<`).
+- **Task priority** (`high` → `medium` → `low`) — determines evaluation order; a high-priority task is always considered before medium ones regardless of duration.
+- **Completion status** — already-completed tasks are excluded before sorting even starts.
 
-Priority was chosen as the primary ordering signal because a pet owner's biggest risk is forgetting a critical task (medication, feeding) rather than optimising total throughput.
+Priority is the primary signal because the biggest risk for a pet owner isn't wasted time — it's forgetting medication or a meal.
 
 **b. Tradeoffs**
 
-The greedy approach schedules tasks in strict priority order and skips any task that does not fit the remaining budget — it does **not** backtrack to find a combination that maximises total scheduled time. For example, if one high-priority task that takes 90 min is followed by a medium task that takes 10 min, and only 80 min remain, the 90-min task is skipped but the 10-min task can still be scheduled.
+The greedy approach schedules tasks in strict priority order and skips any task that doesn't fit the remaining budget — it doesn't backtrack to find a combination that maximises total scheduled time. For example, if a high-priority 90-minute task is next in line but only 80 minutes remain, it gets skipped. A shorter medium-priority task that does fit will still be scheduled after it.
 
-This is reasonable for a pet-care context: correctness (always doing what is possible at the highest priority first) matters more than bin-packing optimality, and the logic is transparent enough that an owner can understand and trust the plan.
+This is a reasonable tradeoff for pet care: owners can understand and predict the plan, and high-priority tasks are never deprioritised just to squeeze in more total work.
 
-A second tradeoff lives in the conflict detector: it checks only for exact time-slot overlap (`A.start < B.end AND B.start < A.end`) and ignores softer constraints like "no feeding within 30 minutes of medication." That's intentional — the greedy scheduler already prevents overlaps in normal use, so the detector is really a safety net for manual or future parallel scheduling. Adding domain-specific soft rules would require a configuration system and produce warnings that are harder to act on. Keeping the check to pure interval math means it stays fast, obvious, and trustworthy.
+A second tradeoff lives in the conflict detector: it checks only for exact time-slot overlap (`A.start < B.end AND B.start < A.end`) and ignores softer constraints like "no feeding within 30 minutes of medication." That's intentional — the greedy scheduler already prevents overlaps in normal use, so the detector is a safety net for manual or future parallel scheduling. Adding domain-specific soft rules would need a configuration system and produce warnings that are harder to act on.
 
 ---
 
 ## 3. AI Collaboration
 
-**a. How you used AI**
+**a. How I used AI**
 
-AI was used to:
-- Brainstorm the class decomposition (Owner / Pet / Task / Scheduler) and identify that `ScheduledTask` was needed as a separate output type.
-- Generate the Mermaid diagram syntax from a natural-language description of the classes.
-- Produce the initial class skeletons with correct dataclass syntax and type hints.
-- Review the scheduler for missing edge cases (e.g., the task list override on `Scheduler`).
+I used AI throughout every phase, but the way I used it shifted as the project got more concrete.
 
-The most useful prompt pattern was: *"Given these classes and their responsibilities, what relationships am I missing?"* — it surfaced the decoupling issue between the UI task list and `Pet.tasks`.
+In the design phase it was most useful as a brainstorming partner. I described what PawPal+ needed to do in plain English and asked which classes would be responsible for what. That conversation surfaced `ScheduledTask` as a separate output type — my initial instinct was to just annotate the `Task` with a start time, but the AI pointed out that mixing "what the task is" with "when it runs today" would make the code harder to read and test. That was a good catch.
 
-**b. Judgment and verification**
+In the implementation phase I used inline suggestions and code completion to write the sorting and filtering methods quickly. The most useful prompts were specific: *"How should Scheduler.filter_tasks() handle the case where pet_name doesn't match any pet?"* rather than *"write my filter function."* Specific prompts got usable code; vague prompts got generic boilerplate.
 
-The AI initially suggested the `Scheduler` should inherit from `Pet` to get direct access to its tasks. This was rejected because inheritance implies an "is-a" relationship, and a `Scheduler` is not a `Pet`. Composition (passing `Pet` as a constructor argument) is the correct relationship here. The change was verified by checking that the scheduler remained independently testable without a `Pet` instance when the `tasks` override is used.
+In the testing phase I used AI to generate an initial list of edge cases, then reviewed it and added several it missed — the `due_date=None` sort order, the idempotent `mark_complete`, and the three-way conflict scenario. AI covered the obvious cases well but needed prompting for the less intuitive ones.
+
+For generating docstrings and commit messages it was genuinely helpful with no supervision needed.
+
+**b. One suggestion I rejected**
+
+Early on, the AI suggested `Scheduler` should inherit from `Pet` so it could access `pet.tasks` directly without being passed a reference. I rejected this immediately — inheritance means "is-a," and a `Scheduler` is not a `Pet`. Using inheritance purely to get access to data is a classic misuse of the pattern and would have made the Scheduler impossible to test independently (you'd always need a fully constructed Pet). Composition — passing the Owner or Pet as a constructor argument — is the right call here, and it's what made the `tasks` override possible later.
+
+I verified this was the right decision by checking: can I test the Scheduler with an arbitrary task list without constructing a Pet at all? Yes, via `Scheduler(owner=owner, tasks=[...])`. That would have been impossible with inheritance.
+
+**c. Separate chat sessions**
+
+Keeping a fresh chat session for each phase made a noticeable difference. By the time I was writing tests, the design conversation was closed — there was no temptation to go back and change class shapes just because a test was awkward to write. Each session had a single job: design, implement, test. The context stayed focused and the AI's suggestions stayed relevant to the current task rather than being anchored to decisions from two phases ago.
+
+The main lesson was that AI works best when you give it a narrow, specific job and then make the final call yourself. The moment I asked broad open-ended questions like *"how should I build this?"* the suggestions were generic. When I asked *"given this specific method signature, what edge cases am I missing?"* the suggestions were actually useful.
 
 ---
 
 ## 4. Testing and Verification
 
-**a. What you tested**
+**a. What I tested**
 
 The suite has 49 tests across five areas, with a mix of happy-path and edge-case checks:
 
 - **Task lifecycle** — `mark_complete()` works correctly, is idempotent, and doesn't affect other tasks. `next_occurrence()` produces the right date for daily, weekly, and as-needed frequencies, and preserves all other attributes. The `due_date=None` fallback was specifically tested because it's an easy oversight.
-- **Pet management** — Adding and removing tasks, `pending_tasks()` filtering, and removing a task that was never added (should be safe, not crash).
+- **Pet management** — Adding and removing tasks, `pending_tasks()` filtering, and removing a task that was never added (should silently do nothing, not crash).
 - **Sorting** — Duration ascending/descending, empty list, single-item list, due-date ordering, and the edge case where `due_date=None` must sort last rather than first.
-- **Filtering** — By pet name, completion status, category, and all three combined. Filtering for a non-existent pet should return `[]`, not crash.
-- **Scheduler** — Zero available time, pet with no tasks, owner with no pets, task that exactly fills the budget (must be included), task one minute over budget (must be excluded), all tasks already completed, priority ordering, same-priority ordering, and conflict detection including same-start-time and three-way overlaps.
+- **Filtering** — By pet name, completion status, category, and all three combined. Filtering for a pet that doesn't exist should return `[]`, not raise.
+- **Scheduler** — Zero available time, pet with no tasks, owner with no pets, task that exactly fills the budget (must be included), task one minute over budget (must be excluded), all tasks already completed, priority ordering, same-priority insertion order, and conflict detection including same-start-time and three-way overlaps.
 
-These tests were important because small off-by-one errors (like using `<` instead of `<=` in the budget check) or silent failures (like a None date sorting to the front) are the kind of bugs that only show up in edge cases.
+These tests matter because small off-by-one errors (like `<` instead of `<=` in the budget check) or silent failures (a None date sorting to the front of the list) are exactly the kind of bugs that feel right when you write the code but only surface when a real user tries an edge case.
 
 **b. Confidence**
 
-★★★★☆ — The core logic paths are well covered. The main remaining gap is UI-level testing (Streamlit session state, form submissions) and end-to-end tests that simulate a full user session. If more time were available, the next tests would be: very large task counts to check for performance regressions, and tasks added via the UI being passed to the scheduler without the task list override.
+★★★★☆ — Core logic is thoroughly covered including boundary conditions. The main gap is UI-level testing: Streamlit session state, form submissions, and the "mark complete" flow in the browser. Next tests to write would be end-to-end scenarios that simulate a full user session from adding a pet to generating and reading the schedule.
 
 ---
 
@@ -155,12 +180,18 @@ These tests were important because small off-by-one errors (like using `<` inste
 
 **a. What went well**
 
-Separating the `ScheduledTask` output type from `Task` kept the scheduler's output clean and easy to render — the UI can display a table directly from `ScheduledTask` fields without any post-processing.
+The decision to keep `ScheduledTask` as a separate output type paid off immediately when it came time to render the schedule table. Each `ScheduledTask` had exactly the fields the UI needed — time label, pet name, description, reason — with no transformation required. The UI was literally just a list comprehension over the schedule.
 
-**b. What you would improve**
+The test suite also made refactoring across phases feel safe. When the Scheduler gained new methods in Phase 4, the existing tests kept running green without changes, which confirmed the new code wasn't breaking old behaviour.
 
-The next iteration would add time-of-day constraints (e.g., "medication must be given after 9 AM") and dependency ordering (e.g., "feeding before medication"). The current model treats all tasks as interchangeable aside from priority and duration.
+**b. What I would improve**
+
+The scheduler currently treats all tasks within the same priority tier as equal — it just takes them in the order they appear. A real improvement would be a secondary sort key: within a priority tier, shorter tasks first. This would let the scheduler pack more tasks into a tight time budget without changing the priority logic.
+
+I'd also add time-of-day constraints (e.g., "medication must happen after 8 AM, not before") and soft dependency ordering (e.g., "feeding before medication"). Right now all tasks are interchangeable aside from priority and duration, which isn't how a real care routine works.
 
 **c. Key takeaway**
 
-Designing the data model before writing any logic forces clarity about what each class is responsible for. When the UI's state management clashed with the original design assumption (`pet.tasks` as the single source of truth), the fix was straightforward precisely because the scheduler was already cleanly separated from the data storage concern.
+The most important thing I learned is that being the "lead architect" when working with AI means making the structural decisions yourself and using the AI to fill in the details. The moment I delegated a structural decision — like how the Scheduler should relate to Pet — the AI gave me a technically plausible but wrong answer (inheritance). When I held the architecture in my head and asked the AI to implement a specific piece of it, the output was useful and usually correct.
+
+Design-first also turned out to protect the code from AI drift. Because the class responsibilities were decided before any code was written, AI suggestions that would have muddied those responsibilities were easy to spot and reject. Without that upfront design, the code would have slowly accumulated shortcuts until the classes no longer had clean jobs.
