@@ -33,9 +33,9 @@ if "tasks" not in st.session_state:
     st.session_state.tasks = []
 
 with st.form("add_task_form", clear_on_submit=True):
-    c1, c2, c3, c4 = st.columns([3, 2, 1, 1])
+    c1, c2, c3, c4, c5 = st.columns([3, 2, 1, 1, 1])
     with c1:
-        task_title = st.text_input("Task title", value="Morning walk")
+        task_desc = st.text_input("Task description", value="Morning walk")
     with c2:
         category = st.selectbox(
             "Category", ["walk", "feeding", "medication", "grooming", "enrichment", "other"]
@@ -44,15 +44,18 @@ with st.form("add_task_form", clear_on_submit=True):
         duration = st.number_input("Duration (min)", min_value=1, max_value=240, value=20)
     with c4:
         priority = st.selectbox("Priority", ["high", "medium", "low"])
+    with c5:
+        frequency = st.selectbox("Frequency", ["daily", "weekly", "as-needed"])
 
     submitted = st.form_submit_button("Add task")
-    if submitted and task_title.strip():
+    if submitted and task_desc.strip():
         st.session_state.tasks.append(
             {
-                "title": task_title.strip(),
+                "description": task_desc.strip(),
                 "category": category,
                 "duration_minutes": int(duration),
                 "priority": priority,
+                "frequency": frequency,
             }
         )
 
@@ -81,10 +84,11 @@ if st.button("Generate schedule", type="primary"):
         pet = Pet(name=pet_name, species=species, age_years=int(pet_age))
         tasks = [
             Task(
-                title=t["title"],
+                description=t["description"],
                 category=t["category"],
                 duration_minutes=t["duration_minutes"],
                 priority=Priority(t["priority"]),
+                frequency=t.get("frequency", "daily"),
             )
             for t in st.session_state.tasks
         ]
@@ -103,7 +107,7 @@ if st.button("Generate schedule", type="primary"):
             rows = [
                 {
                     "Time": entry.time_label(),
-                    "Task": entry.task.title,
+                    "Task": entry.task.description,
                     "Category": entry.task.category,
                     "Duration (min)": entry.task.duration_minutes,
                     "Priority": entry.task.priority.value,
@@ -113,12 +117,12 @@ if st.button("Generate schedule", type="primary"):
             ]
             st.table(rows)
 
-            skipped_titles = {e.task.title for e in schedule}
-            skipped = [t for t in tasks if t.title not in skipped_titles]
+            skipped_titles = {e.task.description for e in schedule}
+            skipped = [t for t in tasks if t.description not in skipped_titles]
             if skipped:
                 st.warning(f"{len(skipped)} task(s) not scheduled due to time constraint:")
                 for t in skipped:
-                    st.write(f"- **{t.title}** ({t.duration_minutes} min, {t.priority.value} priority)")
+                    st.write(f"- **{t.description}** ({t.duration_minutes} min, {t.priority.value} priority)")
 
             with st.expander("Full plan explanation"):
                 st.text(scheduler.explain_plan(schedule))
