@@ -53,3 +53,29 @@ Beyond the basic greedy planner, PawPal+ includes four algorithmic features:
 **Recurring task renewal** — `Scheduler.mark_task_complete(task, pet)` marks a task done and automatically queues the next occurrence. Daily tasks reappear tomorrow; weekly tasks reappear in seven days. As-needed tasks (like a vet visit) are not renewed automatically.
 
 **Conflict detection** — `Scheduler.detect_conflicts(schedule)` scans a list of scheduled entries for overlapping time slots using the standard interval test. It returns plain-English warnings rather than raising exceptions, so the app can surface the issue to the user without crashing.
+
+## Testing PawPal+
+
+Run the full test suite from the project root:
+
+```bash
+python -m pytest
+# or for verbose output:
+python -m pytest -v
+```
+
+The suite lives in `tests/test_pawpal.py` and contains **49 tests** across five areas:
+
+| Area | What's covered |
+|---|---|
+| Task lifecycle | Creation defaults, `mark_complete()`, idempotency, isolation between tasks |
+| Recurrence | Daily (+1 day), weekly (+7 days), as-needed (no renewal), `due_date=None` fallback, attribute preservation |
+| Pet management | Add, remove, `pending_tasks()`, removing a task that was never added, all-done edge case |
+| Sorting | Duration ascending/descending, single-item and empty lists, due-date ordering, `None` dates sort last |
+| Scheduler | No pets, no tasks, zero time budget, task exactly fills budget, one minute over budget, priority ordering, all-completed input, combined filtering, conflict detection (clean, single overlap, same-start-time, three-way overlap, empty/single-entry) |
+
+Each test is labelled with a short comment explaining what could go wrong without that specific check — the goal is that any future change to `pawpal_system.py` that breaks behaviour will be caught immediately.
+
+**Confidence: ★★★★☆**
+
+The core scheduling, sorting, filtering, and recurrence paths are thoroughly covered including boundary conditions. The main gap is integration-level tests for the Streamlit UI itself (button clicks, session-state persistence) and end-to-end tests that simulate a full user session from pet creation to schedule output.

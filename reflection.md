@@ -135,16 +135,19 @@ The AI initially suggested the `Scheduler` should inherit from `Pet` to get dire
 
 **a. What you tested**
 
-Key behaviors to test:
-- Tasks are sorted correctly: high-priority tasks always appear before medium and low ones.
-- The time budget is respected: the total duration of scheduled tasks never exceeds `owner.available_minutes`.
-- Completed tasks are excluded from the schedule.
-- When no tasks fit, `generate_schedule` returns an empty list and `explain_plan` returns a clear message.
-- Tasks that are skipped due to time constraints appear in the "not scheduled" section of the explanation.
+The suite has 49 tests across five areas, with a mix of happy-path and edge-case checks:
+
+- **Task lifecycle** — `mark_complete()` works correctly, is idempotent, and doesn't affect other tasks. `next_occurrence()` produces the right date for daily, weekly, and as-needed frequencies, and preserves all other attributes. The `due_date=None` fallback was specifically tested because it's an easy oversight.
+- **Pet management** — Adding and removing tasks, `pending_tasks()` filtering, and removing a task that was never added (should be safe, not crash).
+- **Sorting** — Duration ascending/descending, empty list, single-item list, due-date ordering, and the edge case where `due_date=None` must sort last rather than first.
+- **Filtering** — By pet name, completion status, category, and all three combined. Filtering for a non-existent pet should return `[]`, not crash.
+- **Scheduler** — Zero available time, pet with no tasks, owner with no pets, task that exactly fills the budget (must be included), task one minute over budget (must be excluded), all tasks already completed, priority ordering, same-priority ordering, and conflict detection including same-start-time and three-way overlaps.
+
+These tests were important because small off-by-one errors (like using `<` instead of `<=` in the budget check) or silent failures (like a None date sorting to the front) are the kind of bugs that only show up in edge cases.
 
 **b. Confidence**
 
-The greedy algorithm is simple enough to reason about manually, which gives high confidence for the core path. Edge cases to test next: tasks with equal priority and equal duration (tie-breaking), a single task that exactly fills the budget, and very large task counts to check performance.
+★★★★☆ — The core logic paths are well covered. The main remaining gap is UI-level testing (Streamlit session state, form submissions) and end-to-end tests that simulate a full user session. If more time were available, the next tests would be: very large task counts to check for performance regressions, and tasks added via the UI being passed to the scheduler without the task list override.
 
 ---
 
