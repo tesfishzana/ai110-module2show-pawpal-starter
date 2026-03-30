@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from enum import Enum
 from typing import List, Optional
 
@@ -23,14 +24,36 @@ class Task:
     frequency: str = "daily"  # how often: "daily", "weekly", "as-needed"
     priority: Priority = Priority.MEDIUM
     is_completed: bool = False
+    due_date: Optional[date] = None  # None means "today" when not explicitly set
 
     def mark_complete(self) -> None:
         """Flip the task to completed."""
         self.is_completed = True
 
+    def next_occurrence(self) -> Optional["Task"]:
+        """
+        Return a fresh copy of this task scheduled for its next occurrence.
+        Returns None for as-needed tasks because there's no predictable next date.
+        """
+        if self.frequency == "as-needed":
+            return None
+
+        base = self.due_date if self.due_date else date.today()
+        delta = timedelta(days=1 if self.frequency == "daily" else 7)
+
+        return Task(
+            description=self.description,
+            category=self.category,
+            duration_minutes=self.duration_minutes,
+            frequency=self.frequency,
+            priority=self.priority,
+            due_date=base + delta,
+        )
+
     def __str__(self) -> str:
         status = "done" if self.is_completed else self.priority.value
-        return f"[{status.upper()}] {self.description} ({self.duration_minutes} min, {self.frequency})"
+        due = f", due {self.due_date}" if self.due_date else ""
+        return f"[{status.upper()}] {self.description} ({self.duration_minutes} min, {self.frequency}{due})"
 
 
 @dataclass
@@ -114,9 +137,8 @@ class Scheduler:
     """
     The brain of PawPal+.
 
-    It asks the Owner for all pet tasks, sorts them by priority, and greedily
-    fits as many as possible into the owner's available time for the day.
-    Tasks that don't fit are listed as skipped at the end of the explanation.
+    Generates a greedy daily care schedule, but also provides sorting,
+    filtering, recurring task renewal, and conflict detection.
     """
 
     def __init__(
@@ -126,23 +148,34 @@ class Scheduler:
         tasks: Optional[List[Task]] = None,
     ):
         self.owner = owner
-        # If a specific pet is passed, use it for display labels.
-        # Otherwise we're working across all the owner's pets.
         self.pet = pet
 
         if tasks is not None:
-            # Explicit override — used by the UI when it manages its own task list.
             self.tasks = tasks
         elif pet is not None:
-            # Single-pet mode: just that pet's tasks.
             self.tasks = list(pet.tasks)
         else:
-            # Normal mode: ask the Owner to gather tasks from all their pets.
             self.tasks = self.get_all_tasks()
+
+    # ------------------------------------------------------------------
+    # Retrieval
+    # ------------------------------------------------------------------
 
     def get_all_tasks(self) -> List[Task]:
         """Retrieve every task across all of the owner's pets."""
         return self.owner.get_all_tasks()
+
+    # ------------------------------------------------------------------
+    # Sorting
+    # ------------------------------------------------------------------
+
+    def sort_by_duration(self, tasks: List[Task], ascending: bool = True) -> List[Task]:
+        """Sort tasks by duration in minutes, shortest first by default."""
+        return sorted(tasks, key=lambda t: t.duration_minutes, reverse=not ascending)
+
+    def sort_by_due_date(self, tasks: List[Task]) -> List[Task]:
+        """Sort tasks by due date, earliest first. Tasks without a due date go last."""
+        return sorted(tasks, key=lambda t: t.due_date or date.max)
 
     def filter_by_priority(self, tasks: List[Task]) -> List[Task]:
         """Sort pending tasks from highest to lowest priority."""
@@ -150,6 +183,86 @@ class Scheduler:
             [t for t in tasks if not t.is_completed],
             key=lambda t: _PRIORITY_RANK[t.priority],
         )
+
+    # ------------------------------------------------------------------
+    # Filtering
+    # ------------------------------------------------------------------
+
+    def filter_tasks(
+        self,
+        tasks: List[Task],
+        pet_name: Optional[str] = None,
+        completed: Optional[bool] = None,
+        category: Optional[str] = None,
+    ) -> List[Task]:
+        """
+        Filter a task list by one or more criteria.
+
+        pet_name  — keep only tasks belonging to this pet
+        completed — True for done tasks, False for pending, None for all
+        category  — keep only tasks in this category (e.g. "walk", "feeding")
+        """
+        result = list(tasks)
+
+        if pet_name is not None:
+            # Build the set of task ids owned by the named pet
+            owned_ids = {
+                id(t)
+                for p in self.owner.pets if p.name == pet_name
+                for t in p.tasks
+            }
+            result = [t for t in result if id(t) in owned_ids]
+
+        if completed is not None:
+            result = [t for t in result if t.is_completed == completed]
+
+        if category is not None:
+            result = [t for t in result if t.category == category]
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Recurring task renewal
+    # ------------------------------------------------------------------
+
+    def mark_task_complete(self, task: Task, pet: Pet) -> Optional[Task]:
+        """
+        Mark a task as done and automatically queue the next occurrence
+        if the task is recurring (daily or weekly).
+
+        Returns the newly created Task, or None for as-needed tasks.
+        """
+        task.mark_complete()
+        renewal = task.next_occurrence()
+        if renewal:
+            pet.add_task(renewal)
+        return renewal
+
+    # ------------------------------------------------------------------
+    # Conflict detection
+    # ------------------------------------------------------------------
+
+    def detect_conflicts(self, schedule: List[ScheduledTask]) -> List[str]:
+        """
+        Scan a schedule for overlapping time slots.
+
+        Two entries conflict when one starts before the other ends — the
+        classic interval overlap check: A.start < B.end AND B.start < A.end.
+        Returns a list of human-readable warning strings (empty if no conflicts).
+        """
+        warnings = []
+        for i, a in enumerate(schedule):
+            for b in schedule[i + 1:]:
+                if a.start_minute < b.end_minute and b.start_minute < a.end_minute:
+                    warnings.append(
+                        f"  ! CONFLICT: '{a.task.description}' ({a.time_label()}) "
+                        f"overlaps '{b.task.description}' ({b.time_label()})"
+                    )
+        return warnings
+
+    # ------------------------------------------------------------------
+    # Schedule generation
+    # ------------------------------------------------------------------
 
     def generate_schedule(self) -> List[ScheduledTask]:
         """
@@ -201,13 +314,17 @@ class Scheduler:
         lines.append(f"Total: {total} min used of {self.owner.available_minutes} min available.")
 
         scheduled_ids = {id(e.task) for e in schedule}
-        skipped = [t for t in self.tasks if id(t) not in scheduled_ids]
+        skipped = [t for t in self.tasks if id(t) not in scheduled_ids and not t.is_completed]
         if skipped:
             lines.append("\nSkipped (didn't fit in the time budget):")
             for t in skipped:
                 lines.append(f"  x  {t.description} — {t.duration_minutes} min ({t.priority.value})")
 
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
 
     def _find_pet_name(self, task: Task) -> str:
         """Look up which pet owns this task, falling back to a generic label."""

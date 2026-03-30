@@ -41,3 +41,15 @@ pip install -r requirements.txt
 5. Add tests to verify key behaviors.
 6. Connect your logic to the Streamlit UI in `app.py`.
 7. Refine UML so it matches what you actually built.
+
+## Smarter Scheduling
+
+Beyond the basic greedy planner, PawPal+ includes four algorithmic features:
+
+**Sorting** — `Scheduler.sort_by_duration()` orders tasks shortest-first (or longest-first) so you can see at a glance which tasks are quick wins. `sort_by_due_date()` surfaces the most urgent tasks regardless of priority level.
+
+**Filtering** — `Scheduler.filter_tasks()` narrows any task list by pet name, completion status, or category. Useful for answering questions like "what does Mochi still have left today?" or "which feeding tasks are across all pets?"
+
+**Recurring task renewal** — `Scheduler.mark_task_complete(task, pet)` marks a task done and automatically queues the next occurrence. Daily tasks reappear tomorrow; weekly tasks reappear in seven days. As-needed tasks (like a vet visit) are not renewed automatically.
+
+**Conflict detection** — `Scheduler.detect_conflicts(schedule)` scans a list of scheduled entries for overlapping time slots using the standard interval test. It returns plain-English warnings rather than raising exceptions, so the app can surface the issue to the user without crashing.

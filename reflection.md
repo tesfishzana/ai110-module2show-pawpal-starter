@@ -109,6 +109,8 @@ The greedy approach schedules tasks in strict priority order and skips any task 
 
 This is reasonable for a pet-care context: correctness (always doing what is possible at the highest priority first) matters more than bin-packing optimality, and the logic is transparent enough that an owner can understand and trust the plan.
 
+A second tradeoff lives in the conflict detector: it checks only for exact time-slot overlap (`A.start < B.end AND B.start < A.end`) and ignores softer constraints like "no feeding within 30 minutes of medication." That's intentional — the greedy scheduler already prevents overlaps in normal use, so the detector is really a safety net for manual or future parallel scheduling. Adding domain-specific soft rules would require a configuration system and produce warnings that are harder to act on. Keeping the check to pure interval math means it stays fast, obvious, and trustworthy.
+
 ---
 
 ## 3. AI Collaboration
